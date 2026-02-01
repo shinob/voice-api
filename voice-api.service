@@ -1,0 +1,14 @@
+[Unit]
+Description=VOICEVOX API Server
+After=network.target
+
+[Service]
+Type=simple
+User=%i
+WorkingDirectory=/opt/voice-api
+ExecStart=/opt/voice-api/run.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

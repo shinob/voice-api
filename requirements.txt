@@ -1,0 +1,5 @@
+fastapi
+librosa
+ollama
+soundfile
+uvicorn[standard]
