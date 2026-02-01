@@ -3,6 +3,7 @@ import re
 import wave
 from contextlib import asynccontextmanager
 from pathlib import Path
+import time
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 
@@ -14,13 +15,16 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from voicevox_core.blocking import Onnxruntime, OpenJtalk, Synthesizer, VoiceModelFile
+from weather import get_today_forecast
 
 BASE_DIR = Path(__file__).parent
 CORE_DIR = BASE_DIR / "voicevox_core"
 KNOWLEDGE_FILE = BASE_DIR / "knowledge.txt"
 READING_DICT_FILE = BASE_DIR / "reading_dict.txt"
+WEATHER_AREA_CODE = "3220100"  # 松江市
 
 synthesizer: Synthesizer | None = None
+last_chat: dict | None = None  # {"user": str, "reply": str, "time": float}
 
 
 @asynccontextmanager
@@ -123,14 +127,38 @@ def _apply_reading_dict(text: str) -> str:
     return text
 
 
+def _get_weather_text() -> str:
+    try:
+        forecast = get_today_forecast(WEATHER_AREA_CODE)
+        parts = [f"今日の{forecast['area']}の天気: {forecast['weather']}"]
+        if forecast.get("temps"):
+            temps = forecast["temps"]
+            if temps.get("min") and temps.get("max"):
+                parts.append(f"気温: {temps['min']}〜{temps['max']}℃")
+            elif temps.get("max"):
+                parts.append(f"最高気温: {temps['max']}℃")
+        if forecast.get("pops"):
+            pops = [p for p in forecast["pops"] if p]
+            if pops:
+                parts.append(f"降水確率: {'/'.join(pops)}%")
+        return "。".join(parts)
+    except Exception:
+        return ""
+
+
 def _build_system_prompt() -> str:
     now = datetime.now(timezone(timedelta(hours=9)))
     date_str = now.strftime("%Y年%m月%d日 %H時%M分")
     base = f"現在の日時は{date_str}（日本時間）です。100文字以内で簡潔に要点のみを短く回答してください。URLやリンクは絶対に含めないでください。"
+
+    weather = _get_weather_text()
+    if weather:
+        base += f"\n\n{weather}"
+
     if KNOWLEDGE_FILE.exists():
         knowledge = KNOWLEDGE_FILE.read_text(encoding="utf-8").strip()
         if knowledge:
-            return f"{base}\n\n以下はあなたが持つ追加知識です。関連する質問にはこの情報を活用してください。それ以外の質問にはあなた自身の知識で回答してください:\n{knowledge}"
+            base += f"\n\n以下はあなたが持つ確実な追加知識です。関連する質問にはこの情報を優先して回答してください。この追加知識に含まれない情報を使って回答する場合は「正確ではないかもしれませんが」と前置きしてください:\n{knowledge}"
     return base
 
 
@@ -144,13 +172,17 @@ def chat(req: ChatRequest):
     if synthesizer is None:
         raise HTTPException(status_code=500, detail="Synthesizer is not initialized")
 
+    global last_chat
+    messages = [{"role": "system", "content": _build_system_prompt()}]
+    if last_chat and (time.monotonic() - last_chat["time"]) < 10:
+        messages.append({"role": "user", "content": last_chat["user"]})
+        messages.append({"role": "assistant", "content": last_chat["reply"]})
+    messages.append({"role": "user", "content": req.text})
+
     try:
         response = ollama.chat(
             model="gemma3",
-            messages=[
-                {"role": "system", "content": _build_system_prompt()},
-                {"role": "user", "content": req.text},
-            ],
+            messages=messages,
             keep_alive="30s",
         )
         reply_text = response.message.content
@@ -158,6 +190,7 @@ def chat(req: ChatRequest):
         raise HTTPException(status_code=500, detail=f"Ollama chat failed: {e}")
 
     reply_text = _truncate_reply(reply_text)
+    last_chat = {"user": req.text, "reply": reply_text, "time": time.monotonic()}
     reading_text = _apply_reading_dict(reply_text)
 
     try:
