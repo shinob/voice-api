@@ -1,7 +1,9 @@
 import io
+import re
 import wave
 from contextlib import asynccontextmanager
 from pathlib import Path
+from datetime import datetime, timezone, timedelta
 from urllib.parse import quote
 
 import librosa
@@ -15,6 +17,8 @@ from voicevox_core.blocking import Onnxruntime, OpenJtalk, Synthesizer, VoiceMod
 
 BASE_DIR = Path(__file__).parent
 CORE_DIR = BASE_DIR / "voicevox_core"
+KNOWLEDGE_FILE = BASE_DIR / "knowledge.txt"
+READING_DICT_FILE = BASE_DIR / "reading_dict.txt"
 
 synthesizer: Synthesizer | None = None
 
@@ -39,6 +43,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="VOICEVOX TTS API", lifespan=lifespan)
 
 PITCH_SHIFT_SEMITONES = 3
+REPLY_MAX_CHARS = 200
 
 
 def pitch_shift_wav(wav_bytes: bytes, n_steps: float = PITCH_SHIFT_SEMITONES) -> bytes:
@@ -69,6 +74,66 @@ def tts(req: TTSRequest):
     return StreamingResponse(io.BytesIO(wav), media_type="audio/wav")
 
 
+def _truncate_reply(text: str, max_chars: int = REPLY_MAX_CHARS) -> str:
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    for sep in ["。", "、", ".", " "]:
+        pos = truncated.rfind(sep)
+        if pos > 0:
+            return truncated[: pos + 1]
+    return truncated
+
+
+def _split_sentences(text: str) -> list[str]:
+    parts = re.split(r"(?<=[。！？\n])", text)
+    return [p for p in parts if p.strip()]
+
+
+def _synthesize_long(text: str, style_id: int) -> bytes:
+    sentences = _split_sentences(text)
+    if not sentences:
+        sentences = [text]
+
+    segments: list[np.ndarray] = []
+    sr = None
+    for sentence in sentences:
+        wav_bytes = synthesizer.tts(sentence.strip(), style_id=style_id)
+        audio, cur_sr = sf.read(io.BytesIO(wav_bytes), dtype="float32")
+        if sr is None:
+            sr = cur_sr
+        segments.append(audio)
+
+    combined = np.concatenate(segments)
+    buf = io.BytesIO()
+    sf.write(buf, combined, sr, format="WAV", subtype="PCM_16")
+    return buf.getvalue()
+
+
+def _apply_reading_dict(text: str) -> str:
+    if not READING_DICT_FILE.exists():
+        return text
+    for line in READING_DICT_FILE.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("\t", 1)
+        if len(parts) == 2:
+            text = text.replace(parts[0], parts[1])
+    return text
+
+
+def _build_system_prompt() -> str:
+    now = datetime.now(timezone(timedelta(hours=9)))
+    date_str = now.strftime("%Y年%m月%d日 %H時%M分")
+    base = f"現在の日時は{date_str}（日本時間）です。100文字以内で簡潔に要点のみを短く回答してください。URLやリンクは絶対に含めないでください。"
+    if KNOWLEDGE_FILE.exists():
+        knowledge = KNOWLEDGE_FILE.read_text(encoding="utf-8").strip()
+        if knowledge:
+            return f"{base}\n\n以下はあなたが持つ追加知識です。関連する質問にはこの情報を活用してください。それ以外の質問にはあなた自身の知識で回答してください:\n{knowledge}"
+    return base
+
+
 class ChatRequest(BaseModel):
     text: str
     speaker_id: int = 0
@@ -83,18 +148,20 @@ def chat(req: ChatRequest):
         response = ollama.chat(
             model="gemma3",
             messages=[
-                {"role": "system", "content": "100文字以内で簡潔に要点のみを短く回答してください。URLやリンクは絶対に含めないでください。"},
+                {"role": "system", "content": _build_system_prompt()},
                 {"role": "user", "content": req.text},
             ],
+            keep_alive="30s",
         )
         reply_text = response.message.content
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ollama chat failed: {e}")
 
-    reading_text = reply_text.replace("京店", "きょうみせ")
+    reply_text = _truncate_reply(reply_text)
+    reading_text = _apply_reading_dict(reply_text)
 
     try:
-        wav = synthesizer.tts(reading_text, style_id=req.speaker_id)
+        wav = _synthesize_long(reading_text, style_id=req.speaker_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Synthesis failed: {e}")
 
