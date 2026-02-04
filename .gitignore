@@ -3,3 +3,4 @@ voicevox_core/
 download-linux-x64
 __pycache__/
 *.pyc
+chat_log.jsonl
