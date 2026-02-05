@@ -10,4 +10,6 @@
 鹿島町	かしまちょう
 =	いこーる
 VTuber	ぶいちゅーばー
-
+Python	ぱいそん
+Javacript	じゃばすくりぷと
+Ruby	るびー

@@ -118,13 +118,13 @@ def get_today_forecast(area_code: str) -> dict:
 
     return {
         "area": area_info["area_name"],
-        "date": today_date,
+        #"date": today_date,
         "weather": today_weather,
-        "weather_code": today_weather_code,
-        "pops": today_pops[:4] if today_pops else None,  # 今日の6時間ごと降水確率
+        #"weather_code": today_weather_code,
+        "pops": max((int(p) for p in today_pops[:4] if p), default=None) if today_pops else None,  # 今日の降水確率の最大値
         "temps": today_temps,
-        "fetched_at": datetime.now().isoformat(),
-        "report_datetime": current_forecast["reportDatetime"],
+        #"fetched_at": datetime.now().isoformat(),
+        #"report_datetime": current_forecast["reportDatetime"],
     }
 
 

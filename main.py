@@ -242,10 +242,8 @@ def _get_weather_text() -> str:
                 parts.append(f"気温: {temps['min']}〜{temps['max']}℃")
             elif temps.get("max"):
                 parts.append(f"最高気温: {temps['max']}℃")
-        if forecast.get("pops"):
-            pops = [p for p in forecast["pops"] if p]
-            if pops:
-                parts.append(f"降水確率: {'/'.join(pops)}%")
+        if forecast.get("pops") is not None:
+            parts.append(f"降水確率: 最大{forecast['pops']}%")
         return "。".join(parts)
     except Exception:
         return ""
@@ -255,7 +253,7 @@ def _build_system_prompt(user_query: str | None = None) -> tuple[str, list[dict]
     """システムプロンプトを構築。(prompt, knowledge_used) を返す"""
     now = datetime.now(timezone(timedelta(hours=9)))
     date_str = now.strftime("%Y年%m月%d日 %H時%M分")
-    base = f"現在の日時は{date_str}（日本時間）です。100文字以内で簡潔に要点のみを短く回答してください。URLやリンクは絶対に含めないでください。"
+    base = f"現在の日時は{date_str}（日本時間）です。100文字以内で簡潔に要点のみを短く回答してください。URLやリンクは絶対に含めないでください。固有名詞を除き、必ず日本語で回答してください。"
 
     weather = _get_weather_text()
     if weather:
